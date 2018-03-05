@@ -1,0 +1,169 @@
+package com.examplefoobar.utils;
+
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+
+import org.apache.commons.io.IOUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import net.jcip.annotations.ThreadSafe;
+
+/**
+ * A thread-safe container that stores a group ID and members.
+ *
+ * It can be added <tt>Member</tt> and return a member list as String. Also, it
+ * can start and stop a background task that writes a member list to specified
+ * files.
+ *
+ * This class is called a lot, so we need improve it.
+ */
+@ThreadSafe
+public class PoorGroup {
+
+	private static final String Line_Seperator = System.getProperty("line.separator");
+	private static final Logger LOGGER = LoggerFactory.getLogger(PoorGroup.class);
+
+	private final String groupId;
+	private final Set<Member> members;
+	/*
+	 * creating volatile boolean so that its value is never cached thread-locally,
+	 * all reads and writes will go straight to "main memory"
+	 */
+	private volatile boolean shouldStop;
+
+	class Member {
+		private final String memberId;
+		private final int age;
+
+		Member(String memberId, int age) {
+			this.memberId = memberId;
+			this.age = age;
+		}
+
+		public String getMemberId() {
+			return memberId;
+		}
+
+		public int getAge() {
+			return age;
+		}
+
+		@Override
+		public boolean equals(Object o) {
+			// Returning false if the passed object is null or not an instance of Member
+			if (o == null || !(o instanceof Member)) {
+				return false;
+			}
+			// If `memberId` matches the other's one, they should be treated as the same
+			// `Member` objects.
+			Member member = (Member) o;
+			return this.memberId == member.memberId;
+		}
+
+		@Override
+		public int hashCode() {
+			return memberId.hashCode();
+		}
+	}
+
+	public PoorGroup(String groupId) {
+		this.groupId = groupId;
+		// Wrapping hashset set to a synchronizedSet which is thread safe.
+		this.members = Collections.synchronizedSet(new HashSet<>());
+	}
+
+	public void addMember(Member member) throws InterruptedException {
+		members.add(member);
+	}
+
+	public String getMembersAsStringWith10xAge() {
+		// Using StringBuilder as it is mutable and offers better performance than
+		// String concatenation
+		StringBuilder sBuilder = new StringBuilder();
+		// synchronizing (using lock on the hashset) read operation to avoid
+		// faulty output.
+		synchronized (members) {
+			for (Member member : members) {
+				int age = member.getAge();
+				age *= 10;
+				sBuilder.append(String.format("memberId=%s, age=%d�n", member.getMemberId(), age));
+				// Each entry on a separate line for better readability.
+				sBuilder.append(Line_Seperator);
+			}
+		}
+		return sBuilder.toString();
+	}
+
+	/**
+	 * Run a background task that writes a member list to specified files 10 times
+	 * in background thread so that it doesn't block the caller's thread.
+	 */
+	public void startLoggingMemberList10Times(final String outputFilePrimary, final String outputFileSecondary) {
+		new Thread(new Runnable() {
+			@Override
+			public void run() {
+				writeToFile(outputFilePrimary, outputFileSecondary);
+			}
+		}).start();
+	}
+
+	/**
+	 * Write a member list to specified files 10 times to specified file
+	 * 
+	 * @param outputFile
+	 *            the file path
+	 */
+	private void writeToFile(final String outputFile, final String outputFileSecondary) {
+		shouldStop = false;
+		FileWriter writer = null;
+		FileWriter writer1 = null;
+		BufferedWriter bufWriter = null;
+		BufferedWriter bufWriter1 = null;
+		try {
+			writer = new FileWriter(new File(outputFile), true);
+			bufWriter = new BufferedWriter(writer);
+			writer1 = new FileWriter(new File(outputFileSecondary), true);
+			bufWriter1 = new BufferedWriter(writer1);
+			int i = 0;
+
+			String s = PoorGroup.this.getMembersAsStringWith10xAge();
+
+			while (!shouldStop && i++ < 10) {
+				bufWriter.write(s);
+				bufWriter1.write(s);
+			}
+			bufWriter.flush();
+			bufWriter1.flush();
+		} catch (IOException e) {
+			throw new RuntimeException("Unexpected error occurred. Please check these file names. outputFile=" + outputFile);
+		} finally {
+			// using Apache IOUtils as it closes a stream ignoring nulls and exceptions.
+			IOUtils.closeQuietly(writer);
+			IOUtils.closeQuietly(bufWriter);
+			IOUtils.closeQuietly(writer1);
+			IOUtils.closeQuietly(bufWriter1);
+		}
+		try {
+			// using TimeUnit instead of thread.sleep for better readability.
+			TimeUnit.SECONDS.sleep(1);
+		} catch (InterruptedException e) {
+			LOGGER.error(e.getMessage());
+		}
+	}
+
+	/**
+	 * Stop the background task started by <tt>startPrintingMemberList()</tt> Of
+	 * course, <tt>startLoggingMemberList</tt> can be called again after calling
+	 * this method.
+	 */
+	public void stopPrintingMemberList() {
+		shouldStop = true;
+	}
+}
